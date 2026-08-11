@@ -1,8 +1,8 @@
-# Qwen19B Big-Math DAPO with Slime
+# Qwen19B Big-Math DAPO-GSPO with Slime
 
 ## 1. 这个项目是做什么的
 
-本项目使用 [THUDM/slime](https://github.com/THUDM/slime) 对 Qwen3.5-MoE 19B 模型进行 DAPO/GRPO 数学强化学习训练，是原 verl 实验的 Slime 迁移版。
+本项目使用 [THUDM/slime](https://github.com/THUDM/slime) 对 Qwen3.5-MoE 19B 模型进行数学强化学习：保留原 DAPO 的 rollout、reward shaping 和 dynamic filtering，policy optimization objective 改为 GSPO。
 
 训练数据来自 Big-Math-RL-Verified 中两个低解题率 bucket：
 
@@ -13,19 +13,19 @@
 
 项目保留的主要训练语义：
 
-- GRPO group mean/std advantage normalization。
-- DAPO Clip-Higher，clip low/high 为 `0.20 / 0.28`。
-- Token-level loss。
-- Token-level TIS，权重截断上限为 `2.0`，随后进行 batch normalization。
+- GSPO group mean/std advantage normalization 和 sequence-level importance ratio。
+- GSPO sequence-level clipping，clip low/high 为 `0.0003 / 0.0004`。
+- Sequence/sample-level loss aggregation，不按 response token 数给长样本额外权重。
+- 正式模式将每批 rollout 拆成 4 个 optimizer step，使 GSPO 的 off-policy ratio/clipping 实际生效。
 - 使用原始正确率 `acc` 过滤全对或全错的采样组。
 - 对 response 末尾 4096 token 施加线性 overlong penalty。
 - KL reward/loss 均为 0。
-- Qwen3.5-MoE rollout routing replay（R3）。
+- 第一版继续启用 Qwen3.5-MoE rollout routing replay（R3）。
 - 支持目标模型的逐 expert HF checkpoint，不修改原始 checkpoint 文件。
 - 支持单机训练与 Docker + Ray 同构多机训练。
 - 支持 AIME25 验证、checkpoint 自动续训、本地日志和 W&B。
 
-当前已经完成 6×H100 80GB 单机 smoke；多机 launcher、2×8 GPU dry-run 和 Ray cluster preflight 已验证，但仍需接收方在真实多台服务器上完成 multi-node smoke。
+新的 DAPO-GSPO recipe 已完成 6×H100 80GB、4-step 单机在线 W&B smoke，覆盖训练、中途 AIME25 eval 和最终 checkpoint 保存。该次短 smoke 的所有采样组恰好都为零方差，因此只验证了系统链路，未验证非零 GSPO policy-gradient 更新。多机 launcher、2×8 GPU dry-run 和 Ray cluster preflight 已验证，但仍需接收方在真实多台服务器上完成 multi-node smoke。
 
 ## 2. 项目目录结构
 
@@ -35,8 +35,7 @@
 ├── MULTINODE.md
 ├── run_dapo.sh
 ├── configs/
-│   ├── multinode.env.example
-│   └── tis_token_batch_normalized.yaml
+│   └── multinode.env.example
 ├── data/
 │   ├── big_math_dapo_train.jsonl
 │   ├── aime25_val.jsonl
@@ -61,7 +60,7 @@
 
 | 路径 | 作用 |
 |---|---|
-| `run_dapo.sh` | 训练总入口，组装 Slime、Megatron、SGLang、DAPO、验证和 W&B 参数 |
+| `run_dapo.sh` | 训练总入口，组装 Slime、Megatron、SGLang、DAPO-GSPO、验证和 W&B 参数 |
 | `scripts/docker_env.sh` | 下载镜像，创建/进入容器，管理容器中的 Ray 节点 |
 | `scripts/ray_cluster.sh` | 启动 Ray head、worker，查看状态或停止本机 Ray |
 | `scripts/preflight.py` | 训练前检查模型结构、checkpoint、数据和并行拓扑 |
@@ -70,7 +69,6 @@
 | `scripts/models/qwen19b-100w.sh` | Qwen3.5-MoE 19B 的 Megatron 模型结构参数 |
 | `slime_hooks/reward.py` | 数学答案正确率、overlong shaping 和 dynamic filter |
 | `slime_hooks/qwen35_per_expert.py` | 逐 expert HF checkpoint 兼容 loader |
-| `configs/tis_token_batch_normalized.yaml` | Token TIS 配置 |
 | `configs/multinode.env.example` | 2 台、每台 8 GPU 的多机配置模板 |
 | `third_party/slime` | 固定 commit 的完整 Slime 框架源码 |
 | `MULTINODE.md` | 多机 Docker、Ray、网络和训练交付手册 |
@@ -311,7 +309,7 @@ bash run_dapo.sh
 
 ```bash
 export OUTPUT_ROOT=/mnt/data/user01/19b100w/slime_runs
-export EXPERIMENT_NAME=qwen19b_slime_dapo_smoke
+export EXPERIMENT_NAME=qwen19b_slime_dapo_gspo_smoke
 export CKPT_DIR="$OUTPUT_ROOT/checkpoints/$EXPERIMENT_NAME"
 export DETAIL_DIR="$OUTPUT_ROOT/details/$EXPERIMENT_NAME"
 export LOG_DIR="$PWD/logs"
@@ -337,11 +335,13 @@ ROLLOUT_N=2 \
 MAX_PROMPT_LENGTH=512 \
 MAX_RESPONSE_LENGTH=1024 \
 MAX_TOKENS_PER_GPU=1536 \
-TOTAL_STEPS=2 \
+TOTAL_STEPS=4 \
+NUM_STEPS_PER_ROLLOUT=1 \
 LR_WARMUP_STEPS=0 \
-SAVE_INTERVAL=2 \
-EVAL_INTERVAL="" \
-EVAL_N=8 \
+SAVE_INTERVAL=4 \
+EVAL_INTERVAL=3 \
+EVAL_BEFORE_TRAIN=0 \
+EVAL_N=2 \
 OVER_SAMPLING_BATCH_SIZE=6 \
 DAPO_OVERLONG_BUFFER_LEN=0 \
 DAPO_OVERLONG_PENALTY_FACTOR=0.5 \
@@ -357,8 +357,8 @@ bash run_dapo.sh \
   --use-wandb \
   --wandb-mode online \
   --wandb-team "your-wandb-entity" \
-  --wandb-project "qwen19b-slime-dapo" \
-  --wandb-group "qwen19b-smoke" \
+  --wandb-project "qwen19b-slime-dapo-gspo" \
+  --wandb-group "qwen19b-dapo-gspo-smoke" \
   --wandb-dir "$OUTPUT_ROOT/wandb"
 ```
 
@@ -370,7 +370,7 @@ bash run_dapo.sh \
 
 ```bash
 export OUTPUT_ROOT=/mnt/data/user01/19b100w/slime_runs
-export EXPERIMENT_NAME=qwen19b_slime_dapo_bigmath_0_010
+export EXPERIMENT_NAME=qwen19b_slime_dapo_gspo_bigmath_0_010
 export CKPT_DIR="$OUTPUT_ROOT/checkpoints/$EXPERIMENT_NAME"
 export DETAIL_DIR="$OUTPUT_ROOT/details/$EXPERIMENT_NAME"
 export LOG_DIR="$PWD/logs"
@@ -397,7 +397,8 @@ MAX_PROMPT_LENGTH=2048 \
 MAX_RESPONSE_LENGTH=24576 \
 MAX_TOKENS_PER_GPU=26624 \
 TOTAL_STEPS=200 \
-LR_WARMUP_STEPS=10 \
+NUM_STEPS_PER_ROLLOUT=4 \
+LR_WARMUP_STEPS=40 \
 SAVE_INTERVAL=20 \
 EVAL_INTERVAL=10 \
 EVAL_N=8 \
@@ -416,12 +417,12 @@ bash run_dapo.sh \
   --use-wandb \
   --wandb-mode online \
   --wandb-team "your-wandb-entity" \
-  --wandb-project "qwen19b-slime-dapo" \
-  --wandb-group "qwen19b-train" \
+  --wandb-project "qwen19b-slime-dapo-gspo" \
+  --wandb-group "qwen19b-dapo-gspo-train" \
   --wandb-dir "$OUTPUT_ROOT/wandb"
 ```
 
-正式模式会使用 FP32 gradient accumulation/all-reduce；smoke 使用 BF16 gradient reduce。
+正式模式会使用 GSPO、每 rollout 4 次更新、R3 和 FP32 gradient accumulation/all-reduce；smoke 使用 1 次更新和 BF16 gradient reduce。默认完整 smoke 共训练 4 步，第 3 步后执行唯一一次 AIME25 eval，第 4 步保存最终 checkpoint。
 
 ### 5.4 两台、每台 8 GPU 的启动方式
 
@@ -467,7 +468,7 @@ set -a
 source configs/multinode.env
 set +a
 export NODE_IP="$MASTER_ADDR"
-export EXPERIMENT_NAME=qwen19b_multinode_dapo
+export EXPERIMENT_NAME=qwen19b_multinode_dapo_gspo
 export CKPT_DIR="$OUTPUT_ROOT/checkpoints/$EXPERIMENT_NAME"
 export DETAIL_DIR="$OUTPUT_ROOT/details/$EXPERIMENT_NAME"
 export LOG_DIR="$PWD/logs"
@@ -483,7 +484,8 @@ MAX_PROMPT_LENGTH=2048 \
 MAX_RESPONSE_LENGTH=24576 \
 MAX_TOKENS_PER_GPU=26624 \
 TOTAL_STEPS=200 \
-LR_WARMUP_STEPS=10 \
+NUM_STEPS_PER_ROLLOUT=4 \
+LR_WARMUP_STEPS=40 \
 SAVE_INTERVAL=20 \
 EVAL_INTERVAL=10 \
 EVAL_N=8 \
@@ -503,7 +505,7 @@ bash run_dapo.sh \
   --use-wandb \
   --wandb-mode online \
   --wandb-team "your-wandb-entity" \
-  --wandb-project "qwen19b-slime-dapo" \
+  --wandb-project "qwen19b-slime-dapo-gspo" \
   --wandb-group "qwen19b-multinode-train" \
   --wandb-dir "$OUTPUT_ROOT/wandb"
 ```
@@ -521,7 +523,7 @@ bash run_dapo.sh \
 | `TRAIN_DATA` | 转换后的训练 JSONL | `data/big_math_dapo_train.jsonl` | 同左 |
 | `EVAL_DATA` | 转换后的 AIME25 JSONL | `data/aime25_val.jsonl` | 同左 |
 | `OUTPUT_ROOT` | checkpoint/details/W&B 根目录 | `/mnt/data/user01/19b100w/slime_runs` | 同左 |
-| `EXPERIMENT_NAME` | 实验名，并参与构造默认输出目录 | `qwen19b_slime_dapo_smoke` | `qwen19b_slime_dapo_bigmath_0_010` |
+| `EXPERIMENT_NAME` | 实验名，并参与构造默认输出目录 | `qwen19b_slime_dapo_gspo_smoke` | `qwen19b_slime_dapo_gspo_bigmath_0_010` |
 | `CKPT_DIR` | checkpoint 保存和自动恢复目录 | `$OUTPUT_ROOT/checkpoints/$EXPERIMENT_NAME` | 同左 |
 | `DETAIL_DIR` | 每个 sample 的 rollout/reward details | `$OUTPUT_ROOT/details/$EXPERIMENT_NAME` | 同左 |
 | `LOG_DIR` | head 节点文本日志目录 | `./logs` | `./logs` |
@@ -533,23 +535,26 @@ bash run_dapo.sh \
 |---|---|---:|---:|
 | `ROLLOUT_BATCH_SIZE` | 每个 rollout 使用的 prompt 数 | 3 | 24 |
 | `ROLLOUT_N` | 每个 prompt 生成的 response 数 | 2 | 8 |
-| `GLOBAL_BATCH_SIZE` | 脚本内部计算：`ROLLOUT_BATCH_SIZE × ROLLOUT_N` | 6 | 192 |
+| `NUM_STEPS_PER_ROLLOUT` | 每批 rollout 拆分成的 optimizer step 数 | 1 | 4 |
+| `GLOBAL_BATCH_SIZE` | 脚本内部计算：`ROLLOUT_BATCH_SIZE × ROLLOUT_N ÷ NUM_STEPS_PER_ROLLOUT` | 6 | 48 |
 | `MAX_PROMPT_LENGTH` | prompt 最大 token 数 | 512 | 2048 |
 | `MAX_RESPONSE_LENGTH` | response 最大 token 数 | 1024 | 24576 |
 | `MAX_TOKENS_PER_GPU` | dynamic batch 每 GPU 最大 token 数 | 1536 | 26624 |
-| `TOTAL_STEPS` | rollout/update 总步数 | 2 | 200 |
+| `TOTAL_STEPS` | rollout 总轮数 | 4 | 200 |
+| optimizer step 总数 | `TOTAL_STEPS × NUM_STEPS_PER_ROLLOUT` | 4 | 800 |
 | `OVER_SAMPLING_BATCH_SIZE` | dynamic sampling 每轮候选 prompt 数 | 6 | 72 |
 | `FILTER_GROUPS` | 是否丢弃全对/全错 group | 0 | 1 |
-| `EVAL_INTERVAL` | 每多少 rollout step 做验证；空表示关闭周期验证 | 空 | 10 |
-| `EVAL_N` | 每道验证题采样的 response 数 | 8 | 8 |
-| `SAVE_INTERVAL` | 每多少 step 保存 checkpoint | 2 | 20 |
+| `EVAL_INTERVAL` | 每多少 rollout step 做验证 | 3 | 10 |
+| `EVAL_BEFORE_TRAIN` | 是否训练前额外验证 | 0 | 1 |
+| `EVAL_N` | 每个验证 prompt 的采样数 | 2 | 8 |
+| `SAVE_INTERVAL` | 每多少 rollout step 保存 checkpoint | 4 | 20 |
 
 ### 6.3 优化器、reward 和显存参数
 
 | 参数 | 含义 | smoke | train |
 |---|---|---:|---:|
 | `ACTOR_LR` | actor Adam learning rate | 1e-6 | 1e-6 |
-| `LR_WARMUP_STEPS` | learning-rate warmup step 数 | 0 | 10 |
+| `LR_WARMUP_STEPS` | learning-rate warmup optimizer step 数；正式配置对应前 10 个 rollout | 0 | 40 |
 | `DAPO_OVERLONG_BUFFER_LEN` | response 尾部线性超长惩罚区间；0 表示关闭 | 0 | 4096 |
 | `DAPO_OVERLONG_PENALTY_FACTOR` | overlong penalty 系数 | 0.5 | 0.5 |
 | `ROLLOUT_GPU_MEM_UTIL` | SGLang static memory fraction | 0.45 | 0.45 |
@@ -605,16 +610,17 @@ bash run_dapo.sh \
 
 容器中先执行 `wandb login`。不要把 API key 直接写进 README 或脚本；多机时每个持久容器都要登录，或由 secret manager 注入凭据。
 
-### 6.7 脚本固定生成的关键 DAPO/Slime 参数
+### 6.7 脚本固定生成的关键 DAPO-GSPO/Slime 参数
 
 | Slime 参数 | 当前值 | 含义 |
 |---|---:|---|
-| `--advantage-estimator` | `grpo` | 使用 GRPO advantage |
-| `--eps-clip / --eps-clip-high` | `0.2 / 0.28` | DAPO asymmetric clipping |
+| `--advantage-estimator` | `gspo` | group advantage + sequence-level importance ratio |
+| `--eps-clip / --eps-clip-high` | `0.0003 / 0.0004` | GSPO sequence-level asymmetric clipping |
 | `--kl-coef / --kl-loss-coef` | `0 / 0` | 不使用 KL reward/loss |
 | `--entropy-coef` | `0` | 不增加 entropy loss |
-| `--use-tis --tis-clip` | `true / 2.0` | Token-level truncated importance sampling |
-| `--calculate-per-token-loss` | true | Token-level loss aggregation |
+| `--use-tis` | 未设置 | 不在 GSPO sequence ratio 之外叠加 token-level TIS |
+| `--calculate-per-token-loss` | 未设置 | 使用 sequence/sample-level loss aggregation |
+| `--use-rollout-routing-replay` | true | 按当前实验要求，第一版 GSPO 继续保留 R3 |
 | `--apply-chat-template-kwargs` | `enable_thinking=true` | 使用模型 thinking chat template |
 | `--rollout-temperature / top-p / top-k` | `1.0 / 1.0 / -1` | Rollout 采样参数 |
 | `--eval-temperature / top-p` | `1.0 / 1.0` | AIME25 采样参数 |
@@ -630,6 +636,7 @@ bash run_dapo.sh \
 - 如果 `CKPT_DIR/latest_checkpointed_iteration.txt` 不存在，launcher 从 `MODEL_PATH` 的原始 HF 权重初始化。
 - 如果 tracker 存在，launcher 自动从 `CKPT_DIR` 续训。
 - 要重新开始，使用新的 `EXPERIMENT_NAME` 或新的 `CKPT_DIR`。
+- 不要从旧 GRPO/DAPO objective 的 optimizer checkpoint 直接续训到 GSPO 默认实验目录。
 - 不要让不同模型或不兼容实验误用同一 checkpoint 目录。
 
 ### 7.2 Smoke 与正式训练精度不同

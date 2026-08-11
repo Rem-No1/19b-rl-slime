@@ -31,14 +31,17 @@ case "$MODE" in
     ROLLOUT_N="${ROLLOUT_N:-2}"
     MAX_PROMPT_LENGTH="${MAX_PROMPT_LENGTH:-512}"
     MAX_RESPONSE_LENGTH="${MAX_RESPONSE_LENGTH:-1024}"
-    TOTAL_STEPS="${TOTAL_STEPS:-2}"
-    LR_WARMUP_STEPS="${LR_WARMUP_STEPS:-0}"
-    SAVE_INTERVAL="${SAVE_INTERVAL:-2}"
-    EVAL_INTERVAL="${EVAL_INTERVAL:-}"
+    TOTAL_STEPS="${TOTAL_STEPS:-4}"
+    NUM_STEPS_PER_ROLLOUT="${NUM_STEPS_PER_ROLLOUT:-1}"
+    DEFAULT_LR_WARMUP_ROLLOUTS=0
+    SAVE_INTERVAL="${SAVE_INTERVAL:-4}"
+    EVAL_INTERVAL="${EVAL_INTERVAL:-3}"
+    EVAL_BEFORE_TRAIN="${EVAL_BEFORE_TRAIN:-0}"
+    EVAL_N="${EVAL_N:-2}"
     OVER_SAMPLING_BATCH_SIZE="${OVER_SAMPLING_BATCH_SIZE:-6}"
     DAPO_OVERLONG_BUFFER_LEN="${DAPO_OVERLONG_BUFFER_LEN:-0}"
     FILTER_GROUPS="${FILTER_GROUPS:-0}"
-    EXPERIMENT_NAME="${EXPERIMENT_NAME:-qwen19b_slime_dapo_smoke}"
+    EXPERIMENT_NAME="${EXPERIMENT_NAME:-qwen19b_slime_dapo_gspo_smoke}"
     ;;
   train)
     ROLLOUT_BATCH_SIZE="${ROLLOUT_BATCH_SIZE:-24}"
@@ -46,13 +49,16 @@ case "$MODE" in
     MAX_PROMPT_LENGTH="${MAX_PROMPT_LENGTH:-2048}"
     MAX_RESPONSE_LENGTH="${MAX_RESPONSE_LENGTH:-24576}"
     TOTAL_STEPS="${TOTAL_STEPS:-200}"
-    LR_WARMUP_STEPS="${LR_WARMUP_STEPS:-10}"
+    NUM_STEPS_PER_ROLLOUT="${NUM_STEPS_PER_ROLLOUT:-4}"
+    DEFAULT_LR_WARMUP_ROLLOUTS=10
     SAVE_INTERVAL="${SAVE_INTERVAL:-20}"
     EVAL_INTERVAL="${EVAL_INTERVAL:-10}"
+    EVAL_BEFORE_TRAIN="${EVAL_BEFORE_TRAIN:-1}"
+    EVAL_N="${EVAL_N:-8}"
     OVER_SAMPLING_BATCH_SIZE="${OVER_SAMPLING_BATCH_SIZE:-72}"
     DAPO_OVERLONG_BUFFER_LEN="${DAPO_OVERLONG_BUFFER_LEN:-4096}"
     FILTER_GROUPS="${FILTER_GROUPS:-1}"
-    EXPERIMENT_NAME="${EXPERIMENT_NAME:-qwen19b_slime_dapo_bigmath_0_010}"
+    EXPERIMENT_NAME="${EXPERIMENT_NAME:-qwen19b_slime_dapo_gspo_bigmath_0_010}"
     ;;
   *)
     echo "[error] MODE must be smoke or train, got: $MODE" >&2
@@ -62,7 +68,19 @@ esac
 export DAPO_OVERLONG_BUFFER_LEN
 export DAPO_OVERLONG_PENALTY_FACTOR="${DAPO_OVERLONG_PENALTY_FACTOR:-0.5}"
 
-GLOBAL_BATCH_SIZE=$((ROLLOUT_BATCH_SIZE * ROLLOUT_N))
+for positive_integer in ROLLOUT_BATCH_SIZE ROLLOUT_N NUM_STEPS_PER_ROLLOUT; do
+  if ! [[ "${!positive_integer}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "[error] $positive_integer must be a positive integer, got: ${!positive_integer}" >&2
+    exit 2
+  fi
+done
+TOTAL_ROLLOUT_SAMPLES=$((ROLLOUT_BATCH_SIZE * ROLLOUT_N))
+if (( TOTAL_ROLLOUT_SAMPLES % NUM_STEPS_PER_ROLLOUT != 0 )); then
+  echo "[error] ROLLOUT_BATCH_SIZE * ROLLOUT_N must be divisible by NUM_STEPS_PER_ROLLOUT" >&2
+  exit 2
+fi
+GLOBAL_BATCH_SIZE=$((TOTAL_ROLLOUT_SAMPLES / NUM_STEPS_PER_ROLLOUT))
+LR_WARMUP_STEPS="${LR_WARMUP_STEPS:-$((DEFAULT_LR_WARMUP_ROLLOUTS * NUM_STEPS_PER_ROLLOUT))}"
 MAX_CONTEXT_LENGTH=$((MAX_PROMPT_LENGTH + MAX_RESPONSE_LENGTH))
 MAX_TOKENS_PER_GPU="${MAX_TOKENS_PER_GPU:-$MAX_CONTEXT_LENGTH}"
 ACTOR_LR="${ACTOR_LR:-1e-6}"
@@ -135,7 +153,7 @@ ROLLOUT_ARGS=(
   --num-rollout "$TOTAL_STEPS"
   --rollout-batch-size "$ROLLOUT_BATCH_SIZE"
   --n-samples-per-prompt "$ROLLOUT_N"
-  --num-steps-per-rollout 1
+  --num-steps-per-rollout "$NUM_STEPS_PER_ROLLOUT"
   --global-batch-size "$GLOBAL_BATCH_SIZE"
   --rollout-max-prompt-len "$MAX_PROMPT_LENGTH"
   --rollout-max-response-len "$MAX_RESPONSE_LENGTH"
@@ -153,7 +171,7 @@ EVAL_ARGS=(
   --eval-prompt-data aime25 "$EVAL_DATA"
   --eval-input-key prompt
   --eval-label-key label
-  --n-samples-per-eval-prompt "${EVAL_N:-8}"
+  --n-samples-per-eval-prompt "$EVAL_N"
   --eval-max-response-len "$MAX_RESPONSE_LENGTH"
   --eval-temperature 1.0
   --eval-top-p 1.0
@@ -161,6 +179,9 @@ EVAL_ARGS=(
 if [[ -n "$EVAL_INTERVAL" ]]; then
   EVAL_ARGS+=(--eval-interval "$EVAL_INTERVAL")
 else
+  EVAL_ARGS+=(--skip-eval-before-train)
+fi
+if [[ "$EVAL_BEFORE_TRAIN" != "1" && -n "$EVAL_INTERVAL" ]]; then
   EVAL_ARGS+=(--skip-eval-before-train)
 fi
 
@@ -175,22 +196,17 @@ PERF_ARGS=(
   --recompute-method uniform
   --recompute-num-layers 1
   --use-dynamic-batch-size
-  --calculate-per-token-loss
   --max-tokens-per-gpu "$MAX_TOKENS_PER_GPU"
   --log-probs-max-tokens-per-gpu "$MAX_TOKENS_PER_GPU"
 )
 
-GRPO_ARGS=(
-  --advantage-estimator grpo
+GSPO_ARGS=(
+  --advantage-estimator gspo
   --kl-coef 0.0
   --kl-loss-coef 0.0
   --entropy-coef 0.0
-  --eps-clip 0.2
-  --eps-clip-high 0.28
-  --use-tis
-  --tis-clip 2.0
-  --custom-config-path "$PROJECT_ROOT/configs/tis_token_batch_normalized.yaml"
-  --custom-tis-function-path examples.train_infer_mismatch_helper.mis.compute_mis_weights_with_cp
+  --eps-clip 0.0003
+  --eps-clip-high 0.0004
 )
 
 OPTIMIZER_ARGS=(
@@ -242,7 +258,7 @@ TRAIN_CMD=(
   "${CKPT_ARGS[@]}"
   "${ROLLOUT_ARGS[@]}"
   "${OPTIMIZER_ARGS[@]}"
-  "${GRPO_ARGS[@]}"
+  "${GSPO_ARGS[@]}"
   "${PERF_ARGS[@]}"
   "${EVAL_ARGS[@]}"
   "${SGLANG_ARGS[@]}"

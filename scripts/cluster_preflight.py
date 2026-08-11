@@ -53,7 +53,6 @@ def probe_node(config: dict[str, str]) -> dict[str, Any]:
         "slime_train": slime_root / "train.py",
         "project_reward": project_root / "slime_hooks" / "reward.py",
         "project_checkpoint_loader": project_root / "slime_hooks" / "qwen35_per_expert.py",
-        "tis_config": project_root / "configs" / "tis_token_batch_normalized.yaml",
     }
     model_index = model / "model.safetensors.index.json"
     if model_index.is_file():

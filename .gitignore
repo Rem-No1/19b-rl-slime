@@ -9,6 +9,7 @@ logs/
 .env.*
 configs/multinode.env
 data/
+data2/
 wandb/
 checkpoints/
 details/

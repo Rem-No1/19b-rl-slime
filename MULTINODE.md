@@ -124,13 +124,13 @@ set +a
 export NODE_IP="$MASTER_ADDR"
 
 MODE=smoke \
-EXPERIMENT_NAME=qwen19b_multinode_smoke_$(date +%Y%m%d_%H%M%S) \
+EXPERIMENT_NAME=qwen19b_multinode_dapo_gspo_smoke_$(date +%Y%m%d_%H%M%S) \
 bash run_dapo.sh \
   --use-wandb \
   --wandb-mode online \
   --wandb-team "iceblwdzs" \
-  --wandb-project "qwen19b-slime-dapo" \
-  --wandb-group "qwen19b-multinode-smoke" \
+  --wandb-project "qwen19b-slime-dapo-gspo" \
+  --wandb-group "qwen19b-multinode-dapo-gspo-smoke" \
   --wandb-dir "/mnt/data/user01/19b100w/slime_runs/wandb"
 ```
 
@@ -156,23 +156,25 @@ set +a
 export NODE_IP="$MASTER_ADDR"
 
 MODE=train \
-EXPERIMENT_NAME=qwen19b_multinode_dapo \
+NUM_STEPS_PER_ROLLOUT=4 \
+EXPERIMENT_NAME=qwen19b_multinode_dapo_gspo \
 bash run_dapo.sh \
   --use-wandb \
   --wandb-mode online \
   --wandb-team "iceblwdzs" \
-  --wandb-project "qwen19b-slime-dapo" \
-  --wandb-group "qwen19b-multinode-train" \
+  --wandb-project "qwen19b-slime-dapo-gspo" \
+  --wandb-group "qwen19b-multinode-dapo-gspo-train" \
   --wandb-dir "/mnt/data/user01/19b100w/slime_runs/wandb"
 ```
 
-`MODE=train` 使用 FP32 gradient accumulation/all-reduce；只有 smoke 为降低初始化显存使用 BF16 gradient reduce。正式配置精度更高，但显存压力也更大，不能把 smoke 成功等同于正式长序列一定成功。
+`MODE=train` 使用 GSPO、每 rollout 4 次 optimizer update、R3 和 FP32 gradient accumulation/all-reduce；只有 smoke 为降低初始化显存使用 BF16 gradient reduce。正式配置精度更高，但显存压力也更大，不能把 smoke 成功等同于正式长序列一定成功。
 
 launcher 的 checkpoint 规则：
 
 - `CKPT_DIR/latest_checkpointed_iteration.txt` 不存在：从原 HF 权重开始。
 - 该文件存在：自动从对应 slime checkpoint 续训。
 - 要全新实验，使用新的 `EXPERIMENT_NAME` 或显式的新 `CKPT_DIR`；不要把不同拓扑/实验误指向旧 checkpoint。
+- GSPO 与旧 GRPO/DAPO objective 不同，不要复用旧实验的 optimizer checkpoint 目录。
 
 训练日志写入 head 项目的 `logs/`，checkpoint/details/W&B 目录默认写到共享的 `OUTPUT_ROOT`。
 
