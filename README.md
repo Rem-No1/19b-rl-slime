@@ -344,7 +344,7 @@ EVAL_INTERVAL="" \
 EVAL_N=8 \
 OVER_SAMPLING_BATCH_SIZE=6 \
 DAPO_OVERLONG_BUFFER_LEN=0 \
-DAPO_OVERLONG_PENALTY_FACTOR=1.0 \
+DAPO_OVERLONG_PENALTY_FACTOR=0.5 \
 FILTER_GROUPS=0 \
 ACTOR_LR=1e-6 \
 ROLLOUT_GPU_MEM_UTIL=0.45 \
@@ -394,8 +394,8 @@ ROLLOUT_TP=2 \
 ROLLOUT_BATCH_SIZE=24 \
 ROLLOUT_N=8 \
 MAX_PROMPT_LENGTH=2048 \
-MAX_RESPONSE_LENGTH=16384 \
-MAX_TOKENS_PER_GPU=18432 \
+MAX_RESPONSE_LENGTH=24576 \
+MAX_TOKENS_PER_GPU=26624 \
 TOTAL_STEPS=200 \
 LR_WARMUP_STEPS=10 \
 SAVE_INTERVAL=20 \
@@ -403,7 +403,7 @@ EVAL_INTERVAL=10 \
 EVAL_N=8 \
 OVER_SAMPLING_BATCH_SIZE=72 \
 DAPO_OVERLONG_BUFFER_LEN=4096 \
-DAPO_OVERLONG_PENALTY_FACTOR=1.0 \
+DAPO_OVERLONG_PENALTY_FACTOR=0.5 \
 FILTER_GROUPS=1 \
 ACTOR_LR=1e-6 \
 ROLLOUT_GPU_MEM_UTIL=0.45 \
@@ -480,8 +480,8 @@ MODE=train \
 ROLLOUT_BATCH_SIZE=24 \
 ROLLOUT_N=8 \
 MAX_PROMPT_LENGTH=2048 \
-MAX_RESPONSE_LENGTH=16384 \
-MAX_TOKENS_PER_GPU=18432 \
+MAX_RESPONSE_LENGTH=24576 \
+MAX_TOKENS_PER_GPU=26624 \
 TOTAL_STEPS=200 \
 LR_WARMUP_STEPS=10 \
 SAVE_INTERVAL=20 \
@@ -489,7 +489,7 @@ EVAL_INTERVAL=10 \
 EVAL_N=8 \
 OVER_SAMPLING_BATCH_SIZE=72 \
 DAPO_OVERLONG_BUFFER_LEN=4096 \
-DAPO_OVERLONG_PENALTY_FACTOR=1.0 \
+DAPO_OVERLONG_PENALTY_FACTOR=0.5 \
 FILTER_GROUPS=1 \
 ACTOR_LR=1e-6 \
 ROLLOUT_GPU_MEM_UTIL=0.45 \
@@ -535,8 +535,8 @@ bash run_dapo.sh \
 | `ROLLOUT_N` | 每个 prompt 生成的 response 数 | 2 | 8 |
 | `GLOBAL_BATCH_SIZE` | 脚本内部计算：`ROLLOUT_BATCH_SIZE × ROLLOUT_N` | 6 | 192 |
 | `MAX_PROMPT_LENGTH` | prompt 最大 token 数 | 512 | 2048 |
-| `MAX_RESPONSE_LENGTH` | response 最大 token 数 | 1024 | 16384 |
-| `MAX_TOKENS_PER_GPU` | dynamic batch 每 GPU 最大 token 数 | 1536 | 18432 |
+| `MAX_RESPONSE_LENGTH` | response 最大 token 数 | 1024 | 24576 |
+| `MAX_TOKENS_PER_GPU` | dynamic batch 每 GPU 最大 token 数 | 1536 | 26624 |
 | `TOTAL_STEPS` | rollout/update 总步数 | 2 | 200 |
 | `OVER_SAMPLING_BATCH_SIZE` | dynamic sampling 每轮候选 prompt 数 | 6 | 72 |
 | `FILTER_GROUPS` | 是否丢弃全对/全错 group | 0 | 1 |
@@ -551,7 +551,7 @@ bash run_dapo.sh \
 | `ACTOR_LR` | actor Adam learning rate | 1e-6 | 1e-6 |
 | `LR_WARMUP_STEPS` | learning-rate warmup step 数 | 0 | 10 |
 | `DAPO_OVERLONG_BUFFER_LEN` | response 尾部线性超长惩罚区间；0 表示关闭 | 0 | 4096 |
-| `DAPO_OVERLONG_PENALTY_FACTOR` | overlong penalty 系数 | 1.0 | 1.0 |
+| `DAPO_OVERLONG_PENALTY_FACTOR` | overlong penalty 系数 | 0.5 | 0.5 |
 | `ROLLOUT_GPU_MEM_UTIL` | SGLang static memory fraction | 0.45 | 0.45 |
 | `ENABLE_R3` | 是否启用 MoE rollout routing replay | 1 | 1 |
 
@@ -636,7 +636,7 @@ bash run_dapo.sh \
 
 - `MODE=smoke` 使用 BF16 gradient reduce，以避免 SGLang colocate 初始化时显存不足。
 - `MODE=train` 使用 FP32 gradient accumulation/all-reduce，精度更高，但显存压力明显更大。
-- 6 卡 smoke 成功不代表 16384 response length 的正式配置一定不会 OOM。正式训练前应做逐步放大测试。
+- 6 卡 smoke 成功不代表 24576 response length 的正式配置一定不会 OOM。正式训练前应做逐步放大测试。
 
 ### 7.3 多机存储和网络
 

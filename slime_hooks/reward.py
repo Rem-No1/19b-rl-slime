@@ -72,7 +72,7 @@ def apply_overlong_penalty(args: Any, score: float, response_length: int) -> tup
     """Apply the linear penalty used by verl's DAPORewardManager."""
 
     buffer_len = int(os.environ.get("DAPO_OVERLONG_BUFFER_LEN", "4096"))
-    factor = float(os.environ.get("DAPO_OVERLONG_PENALTY_FACTOR", "1.0"))
+    factor = float(os.environ.get("DAPO_OVERLONG_PENALTY_FACTOR", "0.5"))
     max_response_len = int(getattr(args, "rollout_max_response_len", 0) or 0)
     if buffer_len <= 0 or max_response_len <= 0:
         return score, 0.0
@@ -126,4 +126,3 @@ def check_nonzero_acc_std(args: Any, samples: list[Any], **kwargs: Any) -> Any:
         # slime accepts the legacy boolean result as well. This also keeps the
         # function independently unit-testable before slime is installed.
         return keep
-
